@@ -1,1 +1,23 @@
 experiments/
+
+# Virtual environment
+.venv/
+venv/
+env/
+.venv*/
+*/.venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+
+# Data besar: diambil dari branch `datamentah` (Git LFS) atau dibuat ulang lewat
+# fetch_hotspots.py -> fetch_weather.py -> build_features.py
+nasa_viirs_kalimantan_raw.csv
+data_karhutla_kalimantan_cleaned.csv
+data_karhutla_dengan_cuaca.csv
+daily_weather.csv
+hourly_weather.csv
+grid_cells.csv

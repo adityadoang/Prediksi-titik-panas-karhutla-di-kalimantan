@@ -6,333 +6,258 @@ Topik ini diangkat berdasarkan rentetan peristiwa dan berita nasional terpanas d
 - Bencana kabut asap pekat lintas daerah yang mengganggu kesehatan masyarakat dan aktivitas penerbangan.
 - Peristiwa jatuhnya helikopter Mi-17 penanganan karhutla di wilayah Seruyan, Kalimantan Tengah, yang menewaskan prajurit TNI saat menjalankan misi pemadaman.
 
-Projek ini bertujuan membangun model Jaringan Syaraf Tiruan yang mampu memprediksi dan memetakan **intensitas pelepasan daya termal kebakaran** (*Fire Radiative Power* / FRP dalam satuan MegaWatt) dari titik api yang terdeteksi, sehingga mitigasi dan alokasi armada pemadam dapat diprioritaskan pada titik api yang paling berbahaya.
+Projek ini bertujuan membangun model Jaringan Syaraf Tiruan yang mampu memprediksi **intensitas pelepasan daya termal kebakaran** (*Fire Radiative Power* / FRP dalam satuan MegaWatt) dari titik api yang terdeteksi satelit, sehingga mitigasi dan alokasi armada pemadam dapat diprioritaskan pada titik api yang paling berbahaya.
 
 ---
 
-## 2. Sumber Data & Validitas
-- **Sumber Data**: Data diambil langsung dari **API resmi NASA FIRMS** (bukan dari dataset Kaggle).
-- **URL Endpoint API**: `https://firms.modaps.eosdis.nasa.gov/api/area/csv/` (menggunakan MAP_KEY publik yang tersedia di dokumentasi).
-- **Sensor & Satelit**: VIIRS (*Visible Infrared Imaging Radiometer Suite*) 375m pada satelit Suomi-NPP (NOAA / S-NPP).
-- **Lisensi Penggunaan**: CC0 Public Domain (kredit NASA FIRMS wajib dicantumkan).
-- **Wilayah Cakupan**: Pulau Kalimantan (Bounding Box koordinat: 108.5°BT s/d 119.5°BT, -4.5°LS s/d 4.5°LU).
-- **Periode Pengambilan Data**: 18 Oktober – 01 November 2026 (**15 hari** puncak musim kebakaran, 29 overpass satelit) — data ditarik per hari via `day_range=1`.
-- **Jumlah Data Riil**: **35.826 sampel titik api** (terdeteksi satelit VIIRS), diambil langsung dari API real-time NASA (live satelit).
-- **File Data Mentah**: `nasa_viirs_kalimantan_raw.csv` (35.827 baris; satu baris FRP 529,28 MW dibuang saat *cleaning* sebagai outlier).
-- **File Data Bersih**: `data_karhutla_kalimantan_cleaned.csv` (9 kolom sensor + target).
-- **File Data Siap Latih**: `data_karhutla_fitur_siap_latih.csv` (35.826 baris, 35 fitur hasil preprocessing + `frp` + label `split` train/val/test), dihasilkan oleh notebook.
+## 2. Sumber Data & Pipeline
+
+| Langkah | Skrip | Keluaran |
+|---|---|---|
+| 1. Titik api VIIRS S-NPP 2021–2025 dari arsip tahunan resmi NASA FIRMS (Indonesia), dipotong ke Kalimantan (108,5°–119,5° BT, −4,5°–4,5° LU/LS) | `fetch_hotspots.py` | `nasa_viirs_kalimantan_raw.csv` (193.106 deteksi) |
+| 2. Cuaca harian NASA POWER (MERRA-2) per sel grid 0,5°: suhu, kelembapan, hujan, angin, kelembapan tanah, VPD | `fetch_weather.py` | `daily_weather.csv`, `grid_cells.csv` |
+| 3. Gabung titik api + cuaca, fitur lag 1/3/7/14/30 hari (hanya hari **sebelum** deteksi) | `build_features.py` | `data_karhutla_dengan_cuaca.csv` |
+| 4. Pembersihan, rekayasa fitur, pelatihan & evaluasi | `projek_jst_karhutla.ipynb` | model, tabel, grafik |
+
+- **Lisensi**: data NASA FIRMS dan NASA POWER terbuka (kredit NASA wajib dicantumkan).
+- **File data besar tidak disimpan di branch ini.** Ambil dari branch **`datamentah`** (Git LFS) atau buat ulang dengan menjalankan tiga skrip di atas secara berurutan.
+
+### Pembersihan data
+- **Hanya kebakaran vegetasi** (`type == 0`). Arsip FIRMS juga memuat 8.130 sumber panas statis/industri (`type == 2`) dan 519 deteksi lepas pantai (`type == 3`) yang bukan karhutla.
+- **FRP < 500 MW** (2 deteksi ekstrem dibuang).
+- Hasil: **184.455 titik api** pada 1.671 hari (2.918 overpass satelit), 3 Januari 2021 – 31 Desember 2025.
+
+| Tahun | Titik api | Median FRP (MW) | Rata-rata FRP (MW) | Porsi CRITICAL (≥ 20 MW) |
+|---|---|---|---|---|
+| 2021 | 16.966 | 5,50 | 8,85 | 8,3% |
+| 2022 | 14.090 | 5,52 | 8,77 | 8,7% |
+| 2023 | 89.215 | 5,47 | 8,94 | 8,8% |
+| 2024 | 31.514 | 6,10 | 10,54 | 11,6% |
+| 2025 | 32.670 | 6,40 | 10,86 | 13,0% |
 
 ### Catatan kualitas data sensor
-- Kanal I4 (`bright_ti4`) memiliki rentang 208–367 K. **1.185 piksel (3,3%) jenuh di 367 K**; median FRP-nya 16,4 MW, jauh di atas median piksel lain (3,5 MW).
-- **10 piksel bernilai 208 K** adalah kasus *fold-over*: api yang begitu panas sehingga nilai digital I4 "terlipat" dan tampak dingin. FRP-nya 48–277 MW. Di notebook piksel ini diberi flag dan diset ke 367 K.
+- Kanal I4 (`bright_ti4`) memiliki rentang 208–367 K. **6.275 piksel (3,4%) jenuh di 367 K**; median FRP-nya 13,85 MW, jauh di atas piksel lain (5,55 MW).
+- **57 piksel bernilai 208 K** adalah kasus *fold-over*: api yang begitu panas sehingga nilai digital I4 "terlipat" dan tampak dingin (median FRP 95,2 MW). Piksel ini diberi flag dan diset ke 367 K.
 - FRP produk 375 m dihitung dari kanal M13 (750 m) yang tidak ada di CSV FIRMS. Akibatnya piksel 375 m yang bersebelahan sering memiliki FRP identik, dan di atas titik saturasi fitur suhu tidak lagi membawa informasi intensitas.
 
 ---
 
-## 3. Fitur Dataset (Variabel JST)
+## 3. Fitur Dataset (67 Fitur Masukan)
 
-Model memakai **35 fitur masukan**: 8 fitur sensor + 2 flag kualitas I4 + 7 fitur termal/geometris + 3 fitur waktu + 4 fitur kerapatan + 11 fitur klaster api.
-
-### 3.1 Fitur Sensor Dasar (8)
-1. `latitude`: Koordinat garis lintang titik api.
-2. `longitude`: Koordinat garis bujur titik api.
-3. `bright_ti4`: Suhu kecerahan kanal termal I-4 (Kelvin) – mendeteksi radiasi api aktif. Piksel terlipat (208 K) diset ke 367 K.
-4. `scan`: Resolusi spasial piksel searah pemindaian satelit.
-5. `track`: Resolusi spasial piksel tegak lurus pemindaian satelit.
-6. `bright_ti5`: Suhu kecerahan kanal termal I-5 (Kelvin) – reflektansi latar belakang.
-7. `is_day`: Waktu deteksi satelit (`1` = Siang, `0` = Malam).
-8. `confidence_score`: Tingkat keyakinan algoritma satelit (`1` = Low, `2` = Nominal, `3` = High).
-
-### 3.2 Flag Kualitas I4 (2)
-| Fitur | Definisi | Alasan |
+| Kelompok | Jumlah | Fitur |
 |---|---|---|
-| `ti4_folded` | `bright_ti4 == 208 K` | Api ekstrem yang membuat nilai digital I4 terlipat |
-| `ti4_saturated` | `bright_ti4 >= 367 K` atau terlipat | Suhu I4 tidak lagi mengukur intensitas |
+| Sensor dasar | 8 | `latitude`, `longitude`, `bright_ti4`, `scan`, `track`, `bright_ti5`, `is_day`, `confidence_score` |
+| Flag kualitas I4 | 2 | `ti4_folded` (208 K), `ti4_saturated` (≥ 367 K atau terlipat) |
+| Termal & geometris | 7 | `delta_t`, `pixel_area` (FRP adalah daya total per piksel), `ti4_day`, `ti4_ti5_ratio`, `delta_t_day`, `conf_high`, `conf_nominal` |
+| Waktu | 5 | `hour_frac`, `hour_sin`, `hour_cos` (jam akuisisi UTC), `doy_sin`, `doy_cos` (musim kemarau/hujan) |
+| Kerapatan hotspot per overpass | 4 | `cell_density`, `neigh_density` (blok 3×3 sel 0,5°), `overpass_total`, `neigh_density_norm` |
+| Klaster api (radius 0,5 & 1 km, overpass yang sama) | 11 | `mir_excess_area` (kelebihan radiansi MIR 3,74 µm × luas piksel), `nb_count`, `nb_max_ti4`, `nb_mean_ti4`, `nb_sat`, `nb_sum_excess` per radius |
+| Cuaca lag (1, 3, 7, 14, 30 hari sebelumnya) | 30 | `precip_acc`, `rh_mean`, `temp_mean`, `wind_mean`, `soil_min`, `vpd_max` |
 
-### 3.3 Fitur Turunan Termal & Geometris (7)
-| Fitur | Rumus | Alasan |
-|---|---|---|
-| `delta_t` | `bright_ti4 - bright_ti5` | Kontras suhu api terhadap latar (proksi energi radiasi) |
-| `pixel_area` | `scan * track` | Luas piksel; FRP adalah daya total per piksel, jadi piksel lebih luas → FRP lebih besar |
-| `ti4_day` | `bright_ti4 * is_day` | Interaksi suhu–waktu |
-| `ti4_ti5_ratio` | `bright_ti4 / bright_ti5` | Kontras relatif terhadap kondisi latar |
-| `delta_t_day` | `delta_t * is_day` | Kontras termal terkoreksi siang/malam |
-| `conf_high` | `confidence_score == 3` | One-hot keyakinan deteksi tinggi |
-| `conf_nominal` | `confidence_score == 2` | One-hot keyakinan nominal |
+Tidak dipakai: cuaca **hari yang sama** (rata-rata harian mencakup jam setelah satelit lewat), `day_idx` (selalu di luar rentang data latih untuk tanggal baru), dan `month` (sudah terwakili `doy_sin`/`doy_cos`). Semua fitur kerapatan dan klaster hanya memakai deteksi pada overpass yang sama, sehingga tersedia begitu data satelit diterima.
 
-### 3.4 Fitur Temporal (3)
-| Fitur | Alasan |
-|---|---|
-| `hour_frac` | Fraksi waktu akuisisi (UTC) dalam sehari (siklus diurnal memengaruhi radiasi terdeteksi) |
-| `hour_sin`, `hour_cos` | Encoding siklik agar jam 23:59 dan 00:01 berdekatan |
-
-`day_idx` tidak dipakai sebagai fitur karena untuk tanggal baru nilainya selalu di luar rentang data latih.
-
-### 3.5 Fitur Kerapatan Hotspot (4)
-Dihitung **per overpass** (tanggal UTC + siang/malam) dari koordinat saja (**tidak memakai target**). Semua informasi ini sudah tersedia begitu data satu lintasan satelit diterima, sehingga tidak ada informasi dari masa depan:
-| Fitur | Alasan |
-|---|---|
-| `cell_density` | Jumlah hotspot di sel grid 0,5° pada overpass yang sama |
-| `neigh_density` | Jumlah hotspot blok 3×3 sel (klaster kebakaran besar) |
-| `overpass_total` | Total hotspot se-Kalimantan pada overpass tersebut (intensitas episode) |
-| `neigh_density_norm` | Rasio klaster terhadap total overpass |
-
-### 3.6 Fitur Klaster Api (11)
-FRP produk 375 m dihitung dari piksel kanal M13 berukuran 750 m yang mencakup beberapa piksel 375 m sekaligus. Karena itu jumlah, suhu, dan status saturasi **piksel api tetangga** (radius 0,5 km dan 1 km, overpass yang sama, tanpa target) membawa informasi energi total api:
-| Fitur | Definisi |
-|---|---|
-| `mir_excess_area` | Kelebihan radiansi MIR 3,74 µm (hukum Planck: `L(T_I4) − L(T_I5)`) × luas piksel |
-| `nb_count_{r}km` | Jumlah piksel api lain dalam radius *r* |
-| `nb_max_ti4_{r}km`, `nb_mean_ti4_{r}km` | Suhu I4 maksimum dan rata-rata di sekitar piksel (termasuk dirinya) |
-| `nb_sat_{r}km` | Jumlah piksel jenuh/terlipat dalam radius *r* |
-| `nb_sum_excess_{r}km` | `log(1 + Σ mir_excess_area)` dalam radius *r* |
-
-### Target Variable ($y$)
-- `frp` (*Fire Radiative Power*): Daya pancar radiasi panas api dalam satuan MegaWatt (MW), terintegrasi per piksel. Saat pelatihan ditransformasi menjadi `log1p(frp)`.
+**Target**: `frp` (MW), dilatih sebagai `log1p(frp)`.
 
 ---
 
-## 4. Eksplorasi Data & Matriks Korelasi
+## 4. Eksplorasi Data
 
 ![Matriks Korelasi Fitur](matriks_korelasi_fitur.png)
 
-### Deskripsi Grafik Matriks Korelasi:
-Heatmap **Korelasi Pearson** di atas menunjukkan kekuatan hubungan linier antar variabel (skala -1 hingga +1):
-1. **`bright_ti4` vs `frp` (0.45)**: Korelasi positif cukup kuat. Suhu kecerahan kanal termal I-4 adalah indikator utama daya api (FRP). Karena FRP sangat menceng, korelasi peringkat (Spearman) jauh lebih tinggi: **0,83**.
-2. **`is_day` vs `frp` (0.38; Spearman 0,65)**: Deteksi siang hari cenderung memiliki intensitas daya api lebih tinggi (puncak siklus harian kebakaran terjadi siang–sore).
-3. **`bright_ti5` vs `frp` (0.32; Spearman 0,55)**: Kanal termal I-5 juga berkontribusi, meski tidak sekuat I-4.
-4. **Variabel Spasial (`latitude`, `longitude`)**: Korelasi mendekati nol terhadap `frp` — intensitas kebakaran tidak ditentukan lokasi geografis semata, melainkan kondisi termal yang dideteksi sensor.
+- Korelasi Pearson `bright_ti4`–FRP hanya 0,31, tetapi korelasi peringkat (Spearman) **0,70**: hubungan monotonik kuat yang tertutupi distribusi FRP yang sangat menceng. Hal yang sama untuk `is_day` (0,23 vs 0,55) dan `bright_ti5` (0,23 vs 0,29).
+- Fitur klaster api paling berkorelasi dengan FRP (Spearman `nb_mean_ti4_0.5km` 0,72), sedangkan fitur cuaca lag lemah (|Spearman| ≤ 0,14) karena resolusinya kasar (sel 0,5°, harian).
 
-### Distribusi Target (dasar perbaikan model)
-- **Median FRP 3,69 MW**, **mean 7,36 MW**, **maksimum 319,51 MW** → distribusi sangat *right-skewed*.
-- Pada model final (data uji berkelompok), **±1,4% sampel dengan error terbesar menyumbang 77,9% nilai MSE**.
-- Segmen **CRITICAL (≥ 20 MW)** hanya **7,5%** dari seluruh data (6,7% dari data uji).
+![Distribusi FRP dan Waktu](distribusi_frp_dan_waktu.png)
 
-Implikasi: loss MSE pada skala asli didominasi segelintir titik api ekstrem, sehingga model cenderung *underestimate* pada titik api besar.
+- **Median FRP 5,73 MW**, **mean 9,53 MW**, **maksimum 408,38 MW** (skewness 7,54; setelah `log1p` 0,55).
+- Kebakaran sangat musiman (puncak Agustus–Oktober) dan 2023 (tahun El Niño) mendominasi data.
+- Pada model JST final, **±1,4% sampel dengan error terbesar menyumbang 61,5% nilai MSE**.
 
 ---
 
 ## 5. Metode & Arsitektur JST
 
-### Framework & Akselerasi:
-- **Framework**: **PyTorch** (`torch`, `torch.nn`, `torch.optim`)
-- **Akselerasi**: CUDA GPU bila tersedia, selain itu CPU. Output yang tersimpan di notebook saat ini dijalankan di CPU.
+### Framework
+**PyTorch** (`torch`, `torch.nn`, `torch.optim`), CUDA bila tersedia. Output yang tersimpan di notebook dijalankan di CPU.
 
-### Jenis Jaringan:
-**Deep Multilayer Perceptron (MLP)** dengan algoritma pelatihan **Backpropagation**, dilengkapi `BatchNorm1d`.
+### Pembagian Data (tanpa kebocoran)
+Satu kebakaran terdeteksi sebagai banyak piksel bersebelahan dalam satu overpass, dan piksel tetangga sering memiliki FRP identik. Dengan split acak, **16,6%** titik uji punya tetangga di data latih dengan FRP persis sama. Karena itu data dibagi per **kelompok = overpass × sel grid 0,5°** (35.360 kelompok): **118.625 latih, 30.427 validasi, 35.403 uji**; piksel kembar di data uji tinggal **0,4%**. Generalisasi ke tahun baru diuji terpisah (latih 2021–2023, validasi 2024, uji 2025).
 
-### Struktur Lapisan (hasil tuning):
-- **Input Layer**: 35 Neuron (distandarisasi dengan `StandardScaler`).
-- **Hidden Layer 1**: 256 Neuron → `BatchNorm1d` → `SiLU` → Dropout `0.2`.
-- **Hidden Layer 2**: 128 Neuron → `BatchNorm1d` → `SiLU` → Dropout `0.1`.
-- **Hidden Layer 3**: 64 Neuron → `BatchNorm1d` → `SiLU` → Dropout `0.05`.
-- **Output Layer**: 1 Neuron `Linear` → memprediksi `log1p(FRP)`.
-- **Total parameter terlatih**: 51.329 bobot & bias per model; model final = **ensemble 5 seed**.
+### Arsitektur Final (hasil tuning)
+- **Input**: 67 neuron (distandarisasi `StandardScaler` yang di-*fit* pada data latih).
+- **Hidden**: 512 → 256 → 128 neuron, masing-masing `BatchNorm1d` → `Tanh` → Dropout (0,2 / 0,1 / 0,05).
+- **Output**: 1 neuron linear → `log1p(FRP)`.
+- **Parameter**: 200.961 per model; model JST final = **ensemble 5 seed**.
 
-### Hyperparameter Pelatihan:
-- **Optimizer**: AdamW (`learning_rate = 0.001`, `weight_decay = 1e-4`).
-- **Loss Function**: *Mean Squared Error* pada ruang `log1p(FRP)`.
-- **Learning Rate Scheduler**: `ReduceLROnPlateau` (faktor 0.5, patience 10).
-- **Early Stopping**: patience 30 epoch, maksimum 300 epoch (seed 42 berhenti di **epoch 79**).
-- **Batch Size**: 128.
+### Pelatihan
+- **Loss**: MSE pada ruang `log1p(FRP)`; **optimizer** AdamW (lr 0,002, weight decay 1e-4); **batch** 512.
+- **Scheduler**: `ReduceLROnPlateau` (faktor 0,5, patience 10); **early stopping** patience 30, maksimum 300 epoch.
+- **Pasca-pemrosesan**: batas atas keluaran `log1p(FRP maks data latih)` dan **kalibrasi isotonic** pada data validasi (MSE validasi 165,01 → 148,20).
 
 ### Hyperparameter Tuning Bertahap
-Dibandingkan pada **data validasi** (kriteria: MSE validasi di ruang `log1p`); tiap tahap memakai pemenang tahap sebelumnya. Hasil lengkap di `hasil_tuning_jst.csv`.
+Dibandingkan pada data validasi (kriteria: MSE validasi ruang `log1p`), anggaran sama untuk setiap percobaan (maks. 80 epoch, patience 15). Hasil lengkap: `hasil_tuning_jst.csv`.
 
 | Tahap | Konfigurasi | Val MSE (log) |
 |---|---|---|
-| A. Aktivasi | ReLU / GELU / **SiLU** / Tanh (256-128-64) | 0,14807 / 0,14798 / **0,14601** / 0,14877 |
-| B. Arsitektur | 128-64-32 / **256-128-64** / 512-256-128 / 256-256-128-64 | 0,14618 / **0,14601** / 0,14786 / 0,14654 |
-| C. Learning rate (batch 128) | 3e-3 / **1e-3** / 3e-4 | 0,14740 / **0,14601** / 0,14651 |
-| C. Batch size (lr 1e-3) | 64 / **128** / 512 | 0,14848 / **0,14601** / 0,14641 |
+| A. Aktivasi (256-128-64) | ReLU / GELU / SiLU / **Tanh** | 0,22503 / 0,22721 / 0,22661 / **0,22441** |
+| B. Arsitektur (Tanh) | 128-64-32 / 256-128-64 / **512-256-128** | 0,22455 / 0,22441 / **0,22380** |
+| C. Learning rate (batch 512) | 3e-4 / 1e-3 / **2e-3** | 0,22469 / 0,22380 / **0,22243** |
+| C. Batch size (lr 1e-3) | **512** / 1024 | **0,22380** / 0,22388 |
 
-Selisih antar-konfigurasi kecil (< 2%), jadi arsitektur bukan hambatan utama; informasi pada fitur yang paling menentukan.
+Selisih antar-konfigurasi kecil (±2%): informasi pada fitur lebih menentukan daripada arsitektur.
 
-### Pembagian Data (tanpa kebocoran)
-Satu kebakaran terdeteksi sebagai banyak piksel bersebelahan dalam satu overpass, dan piksel tetangga sering memiliki FRP identik. Dengan split acak, **29,6%** titik uji punya tetangga di data latih (overpass yang sama, median jarak 0,4 km) dengan FRP persis sama, sehingga skor uji terlalu optimistis.
-
-Karena itu data dibagi per **kelompok = overpass × sel grid 0,5°** (1.514 kelompok); seluruh piksel dalam satu kelompok selalu berada di sisi yang sama. Hasilnya **24.228 latih, 4.869 validasi, 6.729 uji**, dan piksel kembar di data uji tinggal **0,4%**.
-
-### Teknik Kunci:
-1. **Target `log1p(FRP)`** — menstabilkan loss pada distribusi sangat menceng.
-2. **Fitur klaster api** — informasi piksel api tetangga, penyumbang perbaikan terbesar.
-3. **Penanganan piksel I4 terlipat & batas atas keluaran** — flag + set ke 367 K, dan keluaran log dibatasi `log1p(FRP maksimum data latih)`.
-4. **Ensemble 5 seed** — rata-rata prediksi 5 JST dengan inisialisasi berbeda.
-5. **Kalibrasi isotonic** — fungsi monotonik yang di-*fit* pada data **validasi** untuk mengoreksi bias `expm1` (prediksi mean terlalu rendah pada distribusi log-normal). MSE validasi turun dari 56,24 menjadi 49,39.
-6. **Ambang alarm CRITICAL dituning di validasi** — ambang terbesar yang masih memberi recall CRITICAL ≥ 70% pada data validasi (hasil: **16,08 MW**).
+### Pembanding
+Baseline konstan (rata-rata data latih), regresi linear pada `log1p(FRP)` + isotonic, **XGBoost `reg:tweedie`**, dan **ensemble JST + XGBoost** dengan bobot dipilih di data validasi.
 
 ---
 
-## 6. Metrik & Hasil Evaluasi Model
+## 6. Hasil Evaluasi
 
-Seluruh angka di bagian ini berasal dari **data uji berkelompok (6.729 sampel)** yang tidak pernah dilihat saat pelatihan, tuning, kalibrasi, maupun pemilihan model.
+Seluruh angka berasal dari **data uji berkelompok (35.403 titik)** yang tidak dipakai untuk pelatihan, tuning, kalibrasi, maupun pemilihan model.
 
-### 6.1 JST vs Pembanding
+### 6.1 Perbandingan Model
 
 | Model | MSE | RMSE (MW) | MAE (MW) | R² | R² (skala log) |
 |---|---|---|---|---|---|
-| Baseline: rata-rata data latih | 188,79 | 13,74 | 6,42 | 0,000 | −0,287 |
-| Baseline: regresi linear (log1p) + isotonic | 133,40 | 11,55 | 4,04 | 0,293 | 0,685 |
-| XGBoost (tweedie) | 128,38 | 11,33 | 3,74 | 0,320 | 0,714 |
-| **JST ensemble 5 seed + isotonic (model final)** | **121,81** | **11,04** | **3,76** | **0,355** | **0,721** |
+| Baseline: rata-rata data latih | 160,23 | 12,66 | 7,16 | 0,000 | −0,241 |
+| Baseline: regresi linear (log1p) + isotonic | 126,60 | 11,25 | 5,24 | 0,210 | 0,533 |
+| JST ensemble 5 seed + isotonic | 104,09 | 10,20 | 4,64 | 0,350 | 0,630 |
+| XGBoost (tweedie) | 100,26 | 10,01 | 4,47 | 0,374 | 0,638 |
+| **Ensemble JST 0,60 + XGBoost 0,40 (model final)** | **99,14** | **9,96** | **4,50** | **0,381** | **0,642** |
 
-Model final dipilih berdasarkan MSE validasi terkecil (49,39); pada ensemble JST + XGBoost, bobot XGBoost yang terpilih di validasi adalah 0. Median error absolut model final **1,05 MW**.
+- Model final dipilih berdasarkan MSE validasi terkecil (145,98); JST memegang bobot terbesar.
+- **Stabilitas JST antar-seed**: R² 0,342 ± 0,010; MAE 4,680 ± 0,025 MW.
+- Median error absolut JST: 2,10 MW.
 
-**Stabilitas antar-seed** (masing-masing dikalibrasi sendiri): R² **0,351 ± 0,009**, MAE **3,777 ± 0,018 MW**, MSE 122,52 ± 1,73.
-
-### 6.2 Studi Ablasi: Dari Desain Tahap 1 ke Model Final
+### 6.2 Studi Ablasi: Dari Desain Tahap 1 ke JST Final
 
 ![Studi Ablasi](hasil_ablasi_jst.png)
 
 | Langkah | MSE | MAE (MW) | R² | R² (log) |
 |---|---|---|---|---|
-| 1. Desain Tahap 1 (8 fitur, ReLU 128-64-32, Adam, MSE FRP mentah, 30 epoch) | 125,89 | 4,57 | 0,333 | 0,568 |
-| 2. + target log1p, LR scheduler & early stopping | 133,29 | 3,75 | 0,294 | 0,674 |
-| 3. + kalibrasi isotonic | 131,96 | 4,06 | 0,301 | 0,647 |
-| 4. + 16 fitur turunan & arsitektur hasil tuning | 131,29 | 4,13 | 0,305 | 0,642 |
-| 5. + 11 fitur klaster api (1 seed) | 122,72 | 3,80 | 0,350 | 0,716 |
-| **6. + ensemble 5 seed (JST final)** | **121,81** | **3,76** | **0,355** | **0,721** |
+| 1. Desain Tahap 1 (8 fitur, ReLU 128-64-32, Adam, MSE FRP mentah, 30 epoch) | 107,61 | 4,82 | 0,328 | 0,554 |
+| 2. + target log1p, LR scheduler & early stopping | 113,23 | 4,51 | 0,293 | 0,593 |
+| 3. + kalibrasi isotonic | 110,31 | 5,07 | 0,311 | 0,541 |
+| 4. + 18 fitur turunan & arsitektur hasil tuning | 110,75 | 5,05 | 0,309 | 0,548 |
+| 5. + 11 fitur klaster api | 106,55 | 4,73 | 0,335 | 0,616 |
+| 6. + 30 fitur cuaca lag (1 seed) | 104,33 | 4,66 | 0,349 | 0,624 |
+| **7. + ensemble 5 seed (JST final)** | **104,09** | **4,64** | **0,350** | **0,630** |
 
-- **Fitur klaster api** adalah perbaikan terbesar (langkah 4 → 5).
-- Desain Tahap 1 punya MSE lebih rendah daripada langkah 2–4 karena langsung mengoptimasi MSE pada FRP mentah, tetapi MAE-nya terburuk dan R² skala log terendah: loss itu memusatkan model pada segelintir api ekstrem.
-- Model final terbaik pada MSE, R², dan R² skala log. MAE-nya setara dengan langkah 2 (3,76 vs 3,75 MW) karena kalibrasi isotonic menggeser prediksi ke arah rata-rata (MSE turun, MAE sedikit naik).
+- **Fitur klaster api** adalah perbaikan terbesar (langkah 4 → 5); **fitur cuaca lag** menambah lagi (langkah 5 → 6).
+- Desain Tahap 1 punya MSE cukup rendah karena langsung mengoptimasi MSE pada FRP mentah, tetapi R² skala log-nya jauh di bawah JST final.
+- Kalibrasi isotonic menurunkan MSE tetapi menaikkan MAE (langkah 2 → 3), karena prediksi digeser ke arah rata-rata.
 
 Tabel lengkap: `hasil_ablasi_jst.csv`.
 
-### 6.3 Uji Ketahanan Skema Evaluasi
+### 6.3 Kebocoran Split & Generalisasi ke Tahun Baru
 
-Satu holdout memiliki varians besar pada target yang sangat menceng, jadi skema evaluasi juga diuji dengan validasi silang XGBoost (35 fitur, skor gabungan *out-of-fold*):
+Validasi silang XGBoost (67 fitur, skor gabungan *out-of-fold*):
 
-| Skema evaluasi | R² | R² (skala log) | Recall CRITICAL (20 MW) |
+| Skema evaluasi | R² | R² (skala log) | MAE (MW) |
 |---|---|---|---|
-| KFold acak 5-fold (bocor) | 0,570 | 0,81 | 52,2% |
-| **GroupKFold 5-fold (overpass × sel 0,5°)** | **0,400** | **0,76** | **43,1%** |
-| *Forward-chaining* per hari (latih hari < d, uji hari d = 6–14) | 0,386 | 0,73 | 22,9% |
+| KFold acak 5-fold (bocor) | 0,413 | 0,677 | 4,28 |
+| **GroupKFold 5-fold (overpass × sel 0,5°)** | **0,369** | **0,629** | **4,66** |
+| *Forward-chaining* per tahun (latih tahun sebelumnya, uji 2022–2025) | 0,243 | 0,509 | 5,64 |
 
-Uji waktu (latih hari 0–9, validasi 10–11, uji 12–14): **JST R² 0,405** (recall CRITICAL 51,2%), XGBoost R² 0,426 (recall 32,2%).
+**Uji tahun baru** (latih 2021–2023, validasi 2024, uji 2025, 32.670 titik): JST R² 0,202 (MAE 6,96 MW), XGBoost R² 0,212 (MAE 6,58 MW). Memprediksi tahun yang belum pernah dilihat jauh lebih sulit, apalagi FRP 2025 lebih tinggi daripada 2021–2023.
 
 ### 6.4 Performa per Band Intensitas FRP (Model Final)
 
 | Band FRP | n Sampel | Proporsi | MAE (MW) | RMSE (MW) | Bias (MW) |
 |---|---|---|---|---|---|
-| LOW (< 8 MW) | 5.111 | 76,0% | 1,566 | 2,903 | +1,210 |
-| MODERATE (8–20 MW) | 1.166 | 17,3% | 5,047 | 6,443 | +1,817 |
-| CRITICAL (≥ 20 MW) | 452 | 6,7% | 25,218 | 40,138 | −23,406 |
-| **Seluruh test** | **6.729** | **100%** | **3,758** | **11,037** | **−0,338** |
+| LOW (< 8 MW) | 23.191 | 65,5% | 2,260 | 3,495 | +1,939 |
+| MODERATE (8–20 MW) | 8.758 | 24,7% | 4,412 | 5,940 | +1,447 |
+| CRITICAL (≥ 20 MW) | 3.454 | 9,8% | 19,742 | 29,063 | −17,465 |
+| **Seluruh test** | **35.403** | **100%** | **4,498** | **9,957** | **−0,076** |
 
 ### 6.5 Status Mitigasi & Ambang Alarm CRITICAL
 
 | Aturan | Recall CRITICAL | Presisi CRITICAL | Titik ditandai CRITICAL | Akurasi 3 kelas |
 |---|---|---|---|---|
-| Ambang tetap 20 MW | 31,0% | 51,3% | 4,1% | 80,7% |
-| **Ambang alarm dituning di validasi (16,08 MW)** | **66,2%** | **33,4%** | **13,3%** | **77,9%** |
+| Ambang tetap 20 MW | 38,5% | 51,4% | 7,3% | 70,5% |
+| **Ambang alarm dituning di validasi (13,76 MW)** | **67,9%** | **33,7%** | **19,6%** | **66,4%** |
 
-Dengan ambang 16,08 MW, sekitar 2 dari 3 titik api CRITICAL tertangkap, dengan konsekuensi sekitar 2 dari 3 alarm ternyata bukan CRITICAL. Kompromi ini wajar bila melewatkan api besar jauh lebih mahal daripada alarm palsu.
+Dengan ambang 13,76 MW, sekitar 2 dari 3 titik api CRITICAL tertangkap, dengan konsekuensi sekitar 2 dari 3 alarm ternyata bukan CRITICAL. Kompromi ini wajar bila melewatkan api besar jauh lebih mahal daripada alarm palsu.
 
 ---
 
-## 7. Visualisasi & Inferensi Lapangan
+## 7. Visualisasi & Simulasi Mitigasi
 
 ![Hasil Evaluasi Model JST](hasil_evaluasi_jst.png)
 
-Grafik evaluasi model tersimpan di `hasil_evaluasi_jst.png`, memuat:
-1. **Kurva Loss Pelatihan & Validasi JST** (seed 42): early stopping di epoch 79.
-2. **Scatter Plot FRP Aktual vs Prediksi**: keselarasan terhadap garis ideal $y = x$ (R² = 0,355, split berkelompok).
-3. **Distribusi Residual Error**: median residual −0,34 MW.
-4. **Error per Band Intensitas FRP**: MAE & RMSE untuk segmen LOW/MODERATE/CRITICAL.
+`hasil_evaluasi_jst.png` memuat kurva loss (seed 42, early stopping di epoch 72), scatter FRP aktual vs prediksi JST (R² 0,350), distribusi residual (median −0,89 MW), dan error per band.
 
-Notebook juga dilengkapi modul simulasi pengambilan keputusan mitigasi untuk titik api baru. Titik api baru diperlakukan sebagai deteksi pada overpass terakhir (fitur kerapatan & klaster dihitung ulang bersama deteksi overpass itu), dan `acq_time` memakai jam overpass S-NPP yang realistis dalam UTC (siang ±04–07 UTC, malam ±16–19 UTC). Kategori bahaya:
-- **CRITICAL / TINGGI** (≥ ambang alarm 16,08 MW): prioritas operasi *water-bombing* helikopter.
-- **MODERATE / SEDANG** (8 MW – ambang alarm): penugasan regu darat Manggala Agni.
-- **LOW / RINGAN** (< 8 MW): pemantauan satelit berkala.
-
-Contoh keluaran simulasi (model final):
+Simulasi memakai hari dengan titik api terbanyak pada 2025 (**24 September 2025**). Titik contoh diperlakukan sebagai deteksi pada overpass hari itu (fitur kerapatan & klaster dihitung ulang bersama deteksi overpass tersebut), cuaca lag diambil dari deteksi terdekat pada tanggal yang sama, dan `acq_time` memakai jam overpass S-NPP dalam UTC. Kategori: **CRITICAL** (≥ 13,76 MW, prioritas *water-bombing*), **MODERATE** (8–13,76 MW, regu darat Manggala Agni), **LOW** (< 8 MW, pemantauan satelit).
 
 | Lokasi | `bright_ti4` | `acq_time` (UTC) | Prediksi FRP | Rekomendasi |
 |---|---|---|---|---|
-| Katingan (Hutan Gambut Pekat) | 365,2 K | 06:05 | 19,93 MW | CRITICAL — Water Bombing Helikopter |
-| Seruyan (Dekat Pemukiman) | 342,1 K | 06:25 | 7,56 MW | LOW — Pemantauan Satelit Berkala |
-| Ketapang (Titik Api Malam) | 324,6 K | 17:50 | 7,39 MW | LOW — Pemantauan Satelit Berkala |
+| Katingan (Hutan Gambut Pekat) | 365,2 K | 06:05 | 31,80 MW | CRITICAL — Water Bombing Helikopter |
+| Seruyan (Dekat Pemukiman) | 342,1 K | 06:25 | 13,04 MW | MODERATE — Tim Manggala Agni Darat |
+| Ketapang (Titik Api Malam) | 324,6 K | 17:50 | 5,67 MW | LOW — Pemantauan Satelit Berkala |
 
 ---
 
-## 8. Struktur Berkas di Direktori
+## 8. Struktur Berkas
 ```text
 .
-├── nasa_viirs_kalimantan_raw.csv         # Data mentah langsung dari satelit (35.827 baris)
-├── data_karhutla_kalimantan_cleaned.csv  # Dataset riil bersih NASA FIRMS (35.826 baris)
-├── data_karhutla_fitur_siap_latih.csv    # Dataset hasil preprocessing: 35 fitur + frp + label split
-├── projek_jst_karhutla.ipynb             # Notebook Jupyter lengkap (semua sel tereksekusi)
-├── hasil_tuning_jst.csv                  # Tabel hyperparameter tuning JST
-├── hasil_ablasi_jst.csv                  # Tabel studi ablasi Tahap 1 → model final
-├── hasil_ablasi_jst.png                  # Grafik studi ablasi (MAE & R² per langkah)
-├── hasil_evaluasi_jst.png                # Visualisasi Loss, Scatter, Residual, & Error per Band
-├── matriks_korelasi_fitur.png            # Heatmap korelasi antar fitur
-└── README.md                             # Dokumentasi resmi dan laporan teknis
+├── fetch_hotspots.py                         # 1. unduh titik api VIIRS 2021–2025 (NASA FIRMS)
+├── fetch_weather.py                          # 2. unduh cuaca harian NASA POWER per sel 0,5°
+├── build_features.py                         # 3. gabung titik api + cuaca, fitur lag
+├── projek_jst_karhutla.ipynb                 # 4. notebook utama (semua sel tereksekusi)
+├── requirements.txt                          # dependensi Python
+├── hasil_tuning_jst.csv                      # tabel hyperparameter tuning
+├── hasil_ablasi_jst.csv / .png               # studi ablasi Tahap 1 → JST final
+├── hasil_evaluasi_jst.png                    # loss, scatter, residual, error per band
+├── matriks_korelasi_fitur.png                # korelasi fitur sensor
+├── distribusi_frp_dan_waktu.png              # distribusi FRP & pola tahunan/bulanan
+├── Dokumen_Tahap_1_Karhutla_Kalimantan.docx  # dokumen Tahap 1
+├── Laporan_Prediksi_Karhutla_Kalimantan.docx # draf paper
+└── README.md
 ```
+Data (`nasa_viirs_kalimantan_raw.csv`, `daily_weather.csv`, `grid_cells.csv`, `data_karhutla_dengan_cuaca.csv`) ada di branch **`datamentah`** dan diabaikan git di branch ini.
 
 ---
 
 ## 9. Cara Menjalankan
-Buka dan jalankan berkas notebook:
 ```bash
+pip install -r requirements.txt
+# Data: salin CSV dari branch `datamentah`, atau buat ulang:
+python fetch_hotspots.py
+python fetch_weather.py
+python build_features.py
 jupyter notebook projek_jst_karhutla.ipynb
 ```
-Atau buka `projek_jst_karhutla.ipynb` di VS Code dan klik **Run All**. Seluruh sel sudah teruji bebas error dan output hasil eksekusi lengkap sudah tersimpan di dalam file notebook.
+Notebook membutuhkan `data_karhutla_dengan_cuaca.csv` (dan `nasa_viirs_kalimantan_raw.csv` bila kolom `type` belum ada di file cuaca) di folder yang sama.
 
-Satu kali *Run All* memakan waktu sekitar 18 menit di CPU (2 core); sebagian besar untuk hyperparameter tuning, ensemble 5 seed, dan studi ablasi. Di GPU jauh lebih cepat. Untuk melewati tuning dan memakai hasil tersimpan di `hasil_tuning_jst.csv`, ubah `RUN_TUNING = False` di bagian 6b.
-
-**Prasyarat**: `torch`, `pandas`, `numpy`, `scikit-learn`, `matplotlib`, `seaborn`, dan `xgboost` (opsional — hanya untuk benchmark & validasi silang; jika tidak terpasang, sel tersebut otomatis dilewati).
+Satu kali *Run All* memakan waktu sekitar **55 menit di CPU** (2 core); sebagian besar untuk hyperparameter tuning (±20 menit), ensemble 5 seed (±16 menit), dan studi ablasi. Untuk memakai hasil tersimpan (`hasil_tuning_jst.csv`, `hasil_ablasi_jst.csv`) tanpa melatih ulang, ubah `RUN_TUNING = False` dan `RUN_ABLATION = False` di sel pertama. Di GPU jauh lebih cepat.
 
 ---
 
-## 10. Kesimpulan Hasil Pelatihan Model
+## 10. Kesimpulan
 
-Model JST final adalah ensemble 5 MLP 35-256-128-64-1 (BatchNorm + SiLU + dropout) yang dilatih di PyTorch dan dikalibrasi isotonic pada data validasi.
+1. **Model final** (ensemble JST 0,60 + XGBoost 0,40) mencapai MSE 99,14, MAE 4,50 MW, dan R² 0,381 pada data uji berkelompok. **JST sendiri** mencapai R² 0,350 dan MAE 4,64 MW, jauh di atas regresi linear (R² 0,210), dan sedikit di bawah XGBoost (R² 0,374).
+2. **Fitur klaster api** adalah perbaikan terbesar; **fitur cuaca lag** dari NASA POWER menambah akurasi lebih lanjut.
+3. **Tuning** memilih Tanh 512-256-128 (lr 0,002, batch 512), dengan selisih antar-konfigurasi hanya ±2%.
+4. **Evaluasi jujur penting**: split acak terlalu optimistis (R² XGBoost 0,413 vs 0,369 GroupKFold), dan memprediksi tahun baru jauh lebih sulit (R² ±0,2 untuk uji 2025).
+5. **Untuk mitigasi**, ambang alarm 13,76 MW menangkap 67,9% titik api CRITICAL.
 
-### Performa pada Data Uji Berkelompok (6.729 sampel independen):
-- **Model final (JST ensemble 5 seed + isotonic)**: MSE 121,81 · RMSE 11,04 MW · MAE 3,76 MW · R² 0,355 · R² skala log 0,721 (median error absolut 1,05 MW)
-- **Pembanding**: XGBoost R² 0,320 · regresi linear R² 0,293 · baseline konstan R² 0,000
-- **Validasi silang (XGBoost)**: R² 0,400 (GroupKFold), 0,386 (*forward-chaining* per hari)
-- **Recall CRITICAL**: 66,2% dengan ambang alarm 16,08 MW (31,0% dengan ambang tetap 20 MW)
-
-### Interpretasi:
-1. **JST mengungguli semua pembanding** pada MSE, R², dan R² skala log, dengan MAE hampir sama dengan XGBoost.
-2. **Fitur klaster api adalah perbaikan terbesar** (studi ablasi: MAE 4,13 → 3,80 MW, R² 0,305 → 0,350). Alasannya fisis: FRP dihitung dari piksel M13 750 m yang mencakup beberapa piksel 375 m.
-3. **Hyperparameter tuning** menunjukkan selisih antar-konfigurasi kecil (< 2%); informasi pada fitur lebih menentukan daripada arsitektur.
-4. **Evaluasi tanpa kebocoran menurunkan angka, bukan kemampuan model.** Dengan split acak, XGBoost mendapat R² 0,570; selisihnya berasal dari piksel kembar yang bocor ke data uji.
-5. **Model berguna untuk mengurutkan titik api** (R² skala log 0,72), tetapi lemah pada nilai ekstrem: kelas CRITICAL bias −23,4 MW.
-6. **R² ≈ 0,35–0,40** berarti sebagian besar variansi FRP dipengaruhi faktor di luar fitur yang tersedia: saturasi sensor I4, kanal M13 yang tidak tersedia, jenis vegetasi, kelembapan gambut, angin, dan histori kebakaran.
-
-### Rekomendasi Deployment:
-Model dapat diimplementasikan sebagai **alat bantu prioritas** (bukan pengganti penilaian lapangan) untuk:
-- Prioritas alokasi unit pemadam (helikopter water-bombing vs. regu darat) dengan ambang alarm yang dituning.
-- Estimasi kebutuhan sumber daya pemadaman berdasarkan urutan prediksi intensitas FRP.
-- Identifikasi hotspot kritis untuk pengerahan satelit pemantau resolusi tinggi.
-
-### Batasan & Arah Pengembangan:
-- **Data eksternal**: meteorologi real-time (suhu udara, kelembapan relatif, kecepatan angin), tutupan lahan/NDVI, dan kedalaman gambut.
-- **Satelit tambahan**: deteksi NOAA-20/NOAA-21 memberi lebih banyak overpass per hari dan riwayat FRP per lokasi.
-- **Data temporal lebih panjang**: periode saat ini hanya 15 hari pada satu musim, sehingga pola musiman belum terwakili.
-- **Komponen spasial–temporal eksplisit**: deret waktu per sel grid atau arsitektur CNN-LSTM untuk menangkap penyebaran api gambut.
-- **Evaluasi**: selalu gunakan skema berkelompok atau berurutan waktu; split acak membocorkan piksel tetangga.
+### Batasan & Arah Pengembangan
+- FRP dihitung dari kanal M13 yang tidak ada di CSV FIRMS dan 3,4% piksel I4 jenuh, sehingga kelas CRITICAL masih *underestimate* (bias −17,5 MW).
+- Cuaca NASA POWER berresolusi kasar (0,5°, harian); korelasinya dengan FRP per piksel lemah.
+- Distribusi FRP bergeser antar-tahun (2023 El Niño; FRP 2024–2025 lebih tinggi).
+- Pengembangan: deteksi NOAA-20/NOAA-21, peta gambut & tutupan lahan, riwayat FRP per lokasi, model spasial–temporal.
 
 ---
 
 ## Catatan Revisi
 
-**Revisi 1 (audit)** — versi awal melaporkan R² 0,527 (JST) dan 0,592 (XGBoost) dengan split acak. Diperbaiki:
-1. **Kebocoran split acak** → split berkelompok per overpass × sel 0,5°, ditambah GroupKFold, *forward-chaining*, dan uji waktu.
-2. **Piksel I4 terlipat (208 K)** yang sebelumnya dibaca sebagai api dingin (JST memprediksi sampai ±2.800 MW untuk api 277 MW) → flag `ti4_folded`/`ti4_saturated`, set ke 367 K, dan batas atas keluaran log.
-3. **Informasi masa depan di fitur kerapatan** (dihitung per tanggal UTC) → dihitung per overpass; `day_idx` dihapus dari fitur.
-4. **Recall CRITICAL rendah** → ambang alarm dituning di data validasi.
+**Revisi 1 (audit)** — versi awal (data 15 hari) memakai split acak yang bocor. Diperbaiki: split berkelompok, penanganan piksel I4 terlipat/jenuh, kerapatan per overpass tanpa `day_idx`, ambang alarm CRITICAL.
 
-**Revisi 2 (Tahap 2)** — peningkatan model dan kelengkapan eksperimen:
-1. **11 fitur klaster api** (piksel api tetangga radius 0,5 & 1 km).
-2. **Hyperparameter tuning bertahap** (aktivasi, arsitektur, learning rate, batch size) → SiLU 256-128-64.
-3. **Ensemble 5 seed** dan laporan sebaran skor antar-seed.
-4. **Pembanding baseline** (konstan, regresi linear) di samping XGBoost.
-5. **Studi ablasi** dari rancangan dokumen Tahap 1 hingga model final.
-6. **Dataset siap latih** (`data_karhutla_fitur_siap_latih.csv`) dan tabel hasil (`hasil_tuning_jst.csv`, `hasil_ablasi_jst.csv`).
+**Revisi 2 (Tahap 2)** — fitur klaster api, hyperparameter tuning bertahap, ensemble 5 seed, pembanding baseline, studi ablasi.
 
-Perbaikan kecil lain: `acq_time` contoh simulasi memakai jam overpass UTC yang realistis, rumus `pixel_area` diberi penjelasan yang benar (FRP adalah daya total per piksel), dan path lokal `C:/vibing/` serta folder `experiments/` yang tidak ada di repo dihapus dari dokumentasi.
+**Revisi 3 (data 2021–2025 + cuaca)** — data & pipeline baru (`fetch_hotspots.py`, `fetch_weather.py`, `build_features.py`) digabung dengan semua perbaikan di atas:
+- Hanya kebakaran vegetasi (`type == 0`); `build_features.py` kini menyimpan kolom `type`.
+- Hanya cuaca lag (hari sebelumnya); cuaca hari yang sama tidak dipakai.
+- Uji tahun baru (latih 2021–2023, uji 2025) dan *forward-chaining* per tahun.
+- Simulasi memakai tanggal nyata dengan jam overpass UTC yang realistis.
+- `requirements.txt` ditambah `xgboost`.
