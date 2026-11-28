@@ -1,10 +1,11 @@
 """
-Gabungkan data cuaca ERA5 (hourly) dengan titik panas VIIRS.
+Gabungkan data cuaca harian ERA5 (2020-12-01 s/d 2025-12-31) dengan
+titik panas VIIRS Kalimantan multi-tahun (2021-2025).
 
-- Agregasi hourly -> harian per sel grid.
-- Fitur lag 1-7 hari: akumulasi hujan, rata-rata RH/suhu/angin/VPD,
-  min kelembapan tanah (kekeringan bersifat akumulatif).
-- Join ke data FRP berdasarkan tanggal + sel grid 0.1 derajat.
+- Fitur musiman: month, doy_sin, doy_cos (menangkap siklus kemarau/hujan).
+- Fitur lag 1, 3, 7, 14, 30 hari: akumulasi hujan, rata-rata RH/suhu/angin,
+  min kelembapan tanah, maks VPD (kekeringan bersifat akumulatif).
+- Join ke data FRP berdasarkan tanggal + sel grid 0.5 derajat.
 
 Output: data_karhutla_dengan_cuaca.csv
 """
@@ -14,67 +15,79 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-GRID_SIZE = 0.1
-HOURS_PER_DAY = 24
+GRID_SIZE = 0.5
+LAG_WINDOWS = (1, 3, 7, 14, 30)
 
-HOURLY_CSV = Path("hourly_weather.csv")
+DAILY_CSV = Path("daily_weather.csv")
 RAW_CSV = Path("nasa_viirs_kalimantan_raw.csv")
+GRID_CSV = Path("grid_cells.csv")
 OUT_CSV = Path("data_karhutla_dengan_cuaca.csv")
 
 
-def build_daily(hourly: pd.DataFrame) -> pd.DataFrame:
-    daily = (
-        hourly.groupby(["cell_id", hourly["time"].dt.date], as_index=False)
-        .agg(
-            temperature_2m=("temperature_2m", "mean"),
-            relative_humidity_2m=("relative_humidity_2m", "mean"),
-            precipitation=("precipitation", "sum"),
-            wind_speed_10m=("wind_speed_10m", "mean"),
-            soil_moisture_0_to_7cm=("soil_moisture_0_to_7cm", "mean"),
-            vapour_pressure_deficit=("vapour_pressure_deficit", "mean"),
-            rh_min=("relative_humidity_2m", "min"),
-            vpd_max=("vapour_pressure_deficit", "max"),
-        )
-        .rename(columns={"time": "date"})
-    )
+def build_lag_features(daily: pd.DataFrame) -> pd.DataFrame:
     daily["date"] = pd.to_datetime(daily["date"])
+    daily = daily.sort_values(["cell_id", "date"]).reset_index(drop=True)
+    g = daily.groupby("cell_id", group_keys=False)
 
-    daily = daily.sort_values(["cell_id", "date"])
-    g = daily.groupby("cell_id")
+    for lag in LAG_WINDOWS:
+        daily[f"precip_acc_{lag}d"] = g["precipitation_sum"].transform(
+            lambda s: s.shift(1).rolling(lag, min_periods=1).sum()
+        )
+        daily[f"rh_mean_{lag}d"] = g["relative_humidity_2m_mean"].transform(
+            lambda s: s.shift(1).rolling(lag, min_periods=1).mean()
+        )
+        daily[f"temp_mean_{lag}d"] = g["temperature_2m_mean"].transform(
+            lambda s: s.shift(1).rolling(lag, min_periods=1).mean()
+        )
+        daily[f"wind_mean_{lag}d"] = g["wind_speed_10m_mean"].transform(
+            lambda s: s.shift(1).rolling(lag, min_periods=1).mean()
+        )
+        daily[f"soil_min_{lag}d"] = g["soil_moisture_0_to_7cm_mean"].transform(
+            lambda s: s.shift(1).rolling(lag, min_periods=1).min()
+        )
+        daily[f"vpd_max_{lag}d"] = g["vapour_pressure_deficit_max"].transform(
+            lambda s: s.shift(1).rolling(lag, min_periods=1).max()
+        )
 
-    # lag 1-7 hari
-    for lag in range(1, 8):
-        daily[f"precip_acc_{lag}d"] = g["precipitation"].shift(1).rolling(lag, min_periods=1).sum().reset_index(level=0, drop=True) if False else g["precipitation"].transform(lambda s: s.shift(1).rolling(lag, min_periods=1).sum())
-        daily[f"rh_mean_{lag}d"] = g["relative_humidity_2m"].transform(lambda s: s.shift(1).rolling(lag, min_periods=1).mean())
-        daily[f"temp_mean_{lag}d"] = g["temperature_2m"].transform(lambda s: s.shift(1).rolling(lag, min_periods=1).mean())
-        daily[f"wind_mean_{lag}d"] = g["wind_speed_10m"].transform(lambda s: s.shift(1).rolling(lag, min_periods=1).mean())
-        daily[f"soil_min_{lag}d"] = g["soil_moisture_0_to_7cm"].transform(lambda s: s.shift(1).rolling(lag, min_periods=1).min())
-        daily[f"vpd_mean_{lag}d"] = g["vapour_pressure_deficit"].transform(lambda s: s.shift(1).rolling(lag, min_periods=1).mean())
+    # Fitur musiman untuk pola kemarau/hujan tahunan
+    doy = daily["date"].dt.dayofyear
+    daily["month"] = daily["date"].dt.month
+    daily["doy_sin"] = np.sin(2 * np.pi * doy / 365.25)
+    daily["doy_cos"] = np.cos(2 * np.pi * doy / 365.25)
 
     return daily
 
 
 def main() -> None:
-    hourly = pd.read_csv(HOURLY_CSV, parse_dates=["time"])
-    n_cell = hourly["cell_id"].nunique()
-    # verifikasi kelengkapan hourly (24 jam x n_hari per sel)
-    counts = hourly.groupby("cell_id").size()
-    assert counts.min() == counts.max(), "ada sel dengan jumlah jam berbeda"
-    print(f"hourly: {len(hourly)} baris, {n_cell} sel, {counts.iloc[0]} jam/sel")
+    daily = pd.read_csv(DAILY_CSV)
+    n_cell = daily["cell_id"].nunique()
+    counts = daily.groupby("cell_id").size()
+    assert counts.min() == counts.max(), "ada sel dengan jumlah hari berbeda"
+    print(f"daily: {len(daily):,} baris, {n_cell} sel, {counts.iloc[0]} hari/sel")
     print("missing per kolom:")
-    print(hourly.isna().sum().to_string())
+    print(daily.isna().sum().to_string())
 
-    daily = build_daily(hourly)
+    daily = build_lag_features(daily)
 
-    grid = pd.read_csv("grid_cells.csv")
+    grid = pd.read_csv(GRID_CSV)
     frp = pd.read_csv(
         RAW_CSV,
-        usecols=["latitude", "longitude", "acq_date", "acq_time", "frp",
-                 "bright_ti4", "confidence"],
+        usecols=[
+            "latitude",
+            "longitude",
+            "acq_date",
+            "acq_time",
+            "frp",
+            "bright_ti4",
+            "bright_ti5",
+            "scan",
+            "track",
+            "confidence",
+            "daynight",
+        ],
     )
     frp["date"] = pd.to_datetime(frp["acq_date"])
 
-    # kunci grid berbasis integer -> aman dari deviasi floating point
     def to_idx(series: pd.Series) -> pd.Series:
         return (series / GRID_SIZE).round().astype("int64")
 
@@ -89,23 +102,34 @@ def main() -> None:
 
     merged = frp.merge(
         daily,
-        left_on=["date", "lat_idx", "lon_idx"],
-        right_on=["date", "lat_idx", "lon_idx"],
+        on=["date", "lat_idx", "lon_idx"],
         how="left",
     )
 
-    n_missing = merged["temperature_2m"].isna().sum()
-    print(f"\njoin: {len(merged)} baris, tanpa cuaca: {n_missing}")
+    n_missing = merged["temperature_2m_mean"].isna().sum()
+    print(f"\njoin: {len(merged):,} baris, tanpa cuaca: {n_missing}")
     assert n_missing == 0, "ada baris FRP tanpa data cuaca"
 
     merged = merged.drop(columns=["lat_idx", "lon_idx"])
     merged.to_csv(OUT_CSV, index=False)
-    print(f"Selesai: {OUT_CSV} ({len(merged.columns)} kolom)")
+    print(f"Selesai: {OUT_CSV} ({len(merged):,} baris, {len(merged.columns)} kolom)")
 
     print("\ncontoh korelasi fitur cuaca vs FRP:")
-    weather_cols = [c for c in merged.columns if c not in
-                    {"latitude", "longitude", "acq_date", "acq_time", "frp",
-                     "bright_ti4", "confidence", "date"}]
+    ignore = {
+        "latitude",
+        "longitude",
+        "acq_date",
+        "acq_time",
+        "frp",
+        "bright_ti4",
+        "bright_ti5",
+        "scan",
+        "track",
+        "confidence",
+        "daynight",
+        "date",
+    }
+    weather_cols = [c for c in merged.columns if c not in ignore]
     corr = merged[weather_cols + ["frp"]].corr(numeric_only=True)["frp"]
     print(corr.drop("frp").sort_values(key=abs, ascending=False).head(15).to_string())
 
